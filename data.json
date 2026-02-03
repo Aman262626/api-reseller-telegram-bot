@@ -1,0 +1,12 @@
+{
+  "users": {},
+  "resellers": {},
+  "apis": {},
+  "settings": {
+    "master_api": "",
+    "bot_token": "",
+    "webhook_url": "",
+    "api_price": 499,
+    "default_commission": 20
+  }
+}

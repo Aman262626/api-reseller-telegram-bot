@@ -5,10 +5,18 @@ import secrets
 import hashlib
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 import asyncio
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# Global bot application
+bot_app = None
 
 # Data storage
 DATA_FILE = 'data.json'
@@ -49,13 +57,13 @@ def log_activity(user, action, status='success'):
         'status': status
     }
     data['activities'].insert(0, activity)
-    data['activities'] = data['activities'][:100]  # Keep last 100
+    data['activities'] = data['activities'][:100]
     save_data(data)
 
 # Telegram Bot Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    username = update.effective_user.first_name
+    username = update.effective_user.first_name or "User"
     
     keyboard = [
         [InlineKeyboardButton("🔑 Get API Key", callback_data='get_api')],
@@ -104,10 +112,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = load_data()
     user_id = str(query.from_user.id)
-    username = query.from_user.first_name
+    username = query.from_user.first_name or "User"
     
     if query.data == 'get_api':
-        # Generate new API
         api_key = generate_api_key()
         expiry = (datetime.now() + timedelta(days=30)).isoformat()
         
@@ -381,6 +388,27 @@ Happy coding! 💻
             parse_mode='HTML'
         )
 
+# Initialize bot application
+def get_bot_application():
+    global bot_app
+    if bot_app is None:
+        data = load_data()
+        bot_token = os.environ.get('BOT_TOKEN') or data['settings'].get('bot_token')
+        
+        if not bot_token:
+            logger.error("Bot token not found!")
+            return None
+        
+        bot_app = Application.builder().token(bot_token).build()
+        
+        # Add handlers
+        bot_app.add_handler(CommandHandler('start', start))
+        bot_app.add_handler(CallbackQueryHandler(button_handler))
+        
+        logger.info("Bot application initialized successfully")
+    
+    return bot_app
+
 # Flask Routes
 @app.route('/')
 def index():
@@ -423,6 +451,13 @@ def settings():
         settings = request.get_json()
         data['settings'].update(settings)
         save_data(data)
+        
+        # Reinitialize bot if token changed
+        global bot_app
+        if 'bot_token' in settings:
+            bot_app = None
+            get_bot_application()
+        
         return jsonify({'success': True})
     return jsonify(data['settings'])
 
@@ -458,10 +493,92 @@ def generate_api():
     
     return jsonify({'success': True, 'api_key': api_key})
 
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Handle incoming webhook requests from Telegram"""
+    try:
+        bot = get_bot_application()
+        if bot is None:
+            return jsonify({'error': 'Bot not initialized'}), 500
+        
+        # Get update from request
+        update_data = request.get_json(force=True)
+        update = Update.de_json(update_data, bot.bot)
+        
+        # Process update
+        await bot.initialize()
+        await bot.process_update(update)
+        
+        return jsonify({'ok': True})
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/set_webhook', methods=['POST', 'GET'])
+async def set_webhook():
+    """Set up webhook URL for Telegram bot"""
+    try:
+        bot = get_bot_application()
+        if bot is None:
+            return jsonify({'error': 'Bot not initialized. Please add BOT_TOKEN in settings.'}), 400
+        
+        data = load_data()
+        webhook_url = os.environ.get('WEBHOOK_URL') or data['settings'].get('webhook_url')
+        
+        if not webhook_url:
+            return jsonify({'error': 'Webhook URL not configured'}), 400
+        
+        # Set webhook
+        full_webhook_url = f"{webhook_url}/webhook"
+        await bot.bot.set_webhook(url=full_webhook_url)
+        
+        logger.info(f"Webhook set to: {full_webhook_url}")
+        log_activity('System', 'Webhook Configured')
+        
+        return jsonify({
+            'success': True,
+            'webhook_url': full_webhook_url,
+            'message': 'Webhook configured successfully!'
+        })
+    except Exception as e:
+        logger.error(f"Set webhook error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/bot_info', methods=['GET'])
+async def bot_info():
+    """Get bot information and status"""
+    try:
+        bot = get_bot_application()
+        if bot is None:
+            return jsonify({'error': 'Bot not initialized'}), 400
+        
+        bot_data = await bot.bot.get_me()
+        webhook_info = await bot.bot.get_webhook_info()
+        
+        return jsonify({
+            'bot_username': bot_data.username,
+            'bot_name': bot_data.first_name,
+            'bot_id': bot_data.id,
+            'webhook_url': webhook_info.url,
+            'webhook_set': bool(webhook_info.url),
+            'pending_updates': webhook_info.pending_update_count
+        })
+    except Exception as e:
+        logger.error(f"Bot info error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/health')
 def health():
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'bot_initialized': bot_app is not None
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+    
+    # Initialize bot on startup
+    get_bot_application()
+    
     app.run(host='0.0.0.0', port=port, debug=False)

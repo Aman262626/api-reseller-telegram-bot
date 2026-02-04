@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 bot_application = None
 
+# Admin notification channel
+ADMIN_CHANNEL_ID = "-1003449753466"
+
 DATA_FILE = 'data.json'
 
 def load_data():
@@ -30,11 +33,11 @@ def load_data():
             'webhook_url': '',
             'api_price': 499,
             'default_commission': 20,
-            'channel_id': '',
-            'channel_username': '',
-            'force_subscribe': True,
-            'updates_channel': '',
-            'notifications_enabled': True
+            'admin_channel_id': ADMIN_CHANNEL_ID,
+            'public_channel_id': '',
+            'public_channel_username': '',
+            'force_subscribe': False,
+            'admin_notifications': True
         }
     }
 
@@ -55,34 +58,38 @@ def log_activity(user, action, status='success'):
     except Exception as e:
         logger.error(f"Error logging: {e}")
 
-async def send_channel_notification(message, channel_id=None):
-    """Send notification to channel"""
+async def send_admin_notification(message):
+    """Send notification to admin channel only"""
     try:
         if bot_application is None:
             return False
         
         data = load_data()
-        if not channel_id:
-            channel_id = data['settings'].get('channel_id', '')
-        
-        if not channel_id:
-            logger.warning("Channel ID not configured")
+        if not data['settings'].get('admin_notifications', True):
             return False
         
-        await bot_application.bot.send_message(chat_id=channel_id, text=message, parse_mode='HTML')
+        admin_channel = data['settings'].get('admin_channel_id', ADMIN_CHANNEL_ID)
+        
+        await bot_application.bot.send_message(
+            chat_id=admin_channel,
+            text=message,
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
+        logger.info(f"Admin notification sent: {message[:50]}...")
         return True
     except Exception as e:
-        logger.error(f"Channel notification error: {e}")
+        logger.error(f"Admin notification error: {e}")
         return False
 
 async def check_channel_subscription(user_id):
-    """Check if user is subscribed to channel"""
+    """Check if user is subscribed to public channel"""
     try:
         data = load_data()
         if not data['settings'].get('force_subscribe', False):
             return True
         
-        channel_id = data['settings'].get('channel_id', '')
+        channel_id = data['settings'].get('public_channel_id', '')
         if not channel_id:
             return True
         
@@ -110,26 +117,43 @@ def setup_bot():
         async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id = update.effective_user.id
             username = update.effective_user.first_name or "User"
+            user_username = update.effective_user.username or "No username"
             
             data = load_data()
             
-            # Check channel subscription
+            # Send admin notification for new user
+            notification = f"""
+👤 <b>New User Started Bot</b>
+
+<b>User Details:</b>
+• Name: {username}
+• Username: @{user_username}
+• User ID: <code>{user_id}</code>
+• Time: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}
+
+📊 <b>Total Users:</b> {len(data['users']) + 1}
+"""
+            asyncio.create_task(send_admin_notification(notification))
+            
+            # Check public channel subscription if enabled
             if data['settings'].get('force_subscribe', False):
                 is_subscribed = await check_channel_subscription(user_id)
                 if not is_subscribed:
-                    channel_username = data['settings'].get('channel_username', 'YourChannel')
-                    keyboard = [[InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_username}")],
-                               [InlineKeyboardButton("✅ Check Subscription", callback_data='check_subscription')]]
+                    channel_username = data['settings'].get('public_channel_username', 'YourChannel')
+                    keyboard = [
+                        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_username}")],
+                        [InlineKeyboardButton("✅ Check Subscription", callback_data='check_subscription')]
+                    ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     
                     await update.message.reply_text(
                         f"""
 ⚠️ <b>Please Join Our Channel First!</b>
 
-📢 To use this bot, you must join our official channel:
+📢 To use this bot, join:
 @{channel_username}
 
-<b>After joining, click 'Check Subscription' below.</b>
+<b>After joining, click 'Check Subscription'.</b>
 """,
                         reply_markup=reply_markup,
                         parse_mode='HTML'
@@ -141,9 +165,13 @@ def setup_bot():
                 [InlineKeyboardButton("📊 Dashboard", callback_data='dashboard')],
                 [InlineKeyboardButton("💼 Become Reseller", callback_data='become_reseller')],
                 [InlineKeyboardButton("💰 Wallet", callback_data='wallet')],
-                [InlineKeyboardButton("📢 Channel", url=f"https://t.me/{data['settings'].get('channel_username', 'YourChannel')}")],
                 [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
             ]
+            
+            # Add public channel button if configured
+            if data['settings'].get('public_channel_username'):
+                keyboard.insert(4, [InlineKeyboardButton("📢 Channel", url=f"https://t.me/{data['settings']['public_channel_username']}")])]
+            
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             welcome_text = f"""
@@ -163,9 +191,6 @@ def setup_bot():
 <b>💰 Pricing:</b>
 ₹499/month | 1000 requests
 
-<b>📢 Stay Updated:</b>
-Join our channel for updates!
-
 Choose an option:
 """
             
@@ -179,14 +204,17 @@ Choose an option:
             data = load_data()
             user_id = query.from_user.id
             username = query.from_user.first_name or "User"
+            user_username = query.from_user.username or "No username"
             
             # Check subscription for protected actions
             if query.data in ['get_api', 'dashboard', 'become_reseller'] and data['settings'].get('force_subscribe', False):
                 is_subscribed = await check_channel_subscription(user_id)
                 if not is_subscribed:
-                    channel_username = data['settings'].get('channel_username', 'YourChannel')
-                    keyboard = [[InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_username}")],
-                               [InlineKeyboardButton("✅ Check Subscription", callback_data='check_subscription')]]
+                    channel_username = data['settings'].get('public_channel_username', 'YourChannel')
+                    keyboard = [
+                        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_username}")],
+                        [InlineKeyboardButton("✅ Check Subscription", callback_data='check_subscription')]
+                    ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     await query.edit_message_text(
                         f"⚠️ <b>Please join @{channel_username} first!</b>",
@@ -229,19 +257,29 @@ Choose an option:
                 save_data(data)
                 log_activity(username, 'API Key Generated')
                 
-                # Send channel notification
-                if data['settings'].get('notifications_enabled', True):
-                    notification = f"""
+                # Send admin notification
+                admin_notif = f"""
 🎉 <b>New API Key Generated!</b>
 
-👤 User: {username}
-🆔 ID: {user_id}
-🔑 Type: Perplexity AI
-📅 Date: {datetime.now().strftime('%d %b %Y')}
+<b>User Info:</b>
+• Name: {username}
+• Username: @{user_username}
+• User ID: <code>{user_id}</code>
 
-📊 Total Users: {len(data['users'])}
+<b>API Details:</b>
+• Key: <code>{api_key[:25]}...</code>
+• Type: Perplexity AI
+• Limit: 1,000 requests/month
+• Expiry: {datetime.fromisoformat(expiry).strftime('%d %b %Y')}
+
+📅 Time: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}
+
+📊 <b>Total Stats:</b>
+• Total Users: {len(data['users'])}
+• Total APIs: {len(data['apis'])}
+• Revenue: ₹{len(data['users']) * 499}
 """
-                    asyncio.create_task(send_channel_notification(notification))
+                asyncio.create_task(send_admin_notification(admin_notif))
                 
                 await query.edit_message_text(
                     f"""
@@ -315,19 +353,23 @@ Use /start to return.
                     save_data(data)
                     log_activity(username, 'Became Reseller')
                     
-                    # Send channel notification
-                    if data['settings'].get('notifications_enabled', True):
-                        notification = f"""
+                    # Send admin notification
+                    admin_notif = f"""
 👥 <b>New Reseller Joined!</b>
 
-👤 Name: {username}
-🆔 ID: {reseller_id}
-💰 Commission: {data['settings']['default_commission']}%
-📅 Date: {datetime.now().strftime('%d %b %Y')}
+<b>Reseller Info:</b>
+• Name: {username}
+• Username: @{user_username}
+• User ID: <code>{user_id}</code>
+• Reseller ID: <code>{reseller_id}</code>
 
-📈 Total Resellers: {len(data['resellers'])}
+<b>Commission:</b> {data['settings']['default_commission']}%
+
+📅 Time: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}
+
+📈 <b>Total Resellers:</b> {len(data['resellers'])}
 """
-                        asyncio.create_task(send_channel_notification(notification))
+                    asyncio.create_task(send_admin_notification(admin_notif))
                 
                 reseller = data['resellers'][str(user_id)]
                 
@@ -377,9 +419,8 @@ Contact admin to withdraw.
                 )
             
             elif query.data == 'help':
-                channel_username = data['settings'].get('channel_username', 'YourChannel')
                 await query.edit_message_text(
-                    f"""
+                    """
 ℹ️ <b>Help & Support</b>
 
 <b>📱 Commands:</b>
@@ -389,9 +430,6 @@ Contact admin to withdraw.
 <b>🔧 Issues?</b>
 • API not working? Check expiry
 • Limit reached? Contact admin
-
-<b>📢 Channel:</b>
-@{channel_username}
 
 <b>💬 Support:</b>
 • Telegram: @YourSupport
@@ -492,11 +530,89 @@ def generate_api():
     save_data(data)
     log_activity(payload['userName'], 'API Generated via Admin Panel')
     
+    # Send admin notification
+    admin_notif = f"""
+🔑 <b>API Generated via Admin Panel</b>
+
+<b>User:</b> {payload['userName']}
+<b>Telegram ID:</b> <code>{payload['telegramId']}</code>
+<b>API Type:</b> {payload['apiType']}
+<b>Limit:</b> {payload['rateLimit']} requests
+<b>Expiry:</b> {payload['expiryDays']} days
+
+📅 Time: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}
+"""
+    asyncio.run(send_admin_notification(admin_notif))
+    
     return jsonify({'success': True, 'api_key': api_key})
+
+@app.route('/api/delete/<api_key>', methods=['DELETE'])
+def delete_api(api_key):
+    try:
+        data = load_data()
+        
+        if api_key in data['apis']:
+            api_info = data['apis'][api_key]
+            user_id = api_info.get('user_id')
+            username = api_info.get('username')
+            
+            del data['apis'][api_key]
+            if user_id and user_id in data['users']:
+                del data['users'][user_id]
+            
+            save_data(data)
+            log_activity('Admin', f'API Deleted: {api_key[:20]}...')
+            
+            # Send admin notification
+            admin_notif = f"""
+❌ <b>API Deleted</b>
+
+<b>User:</b> {username}
+<b>User ID:</b> <code>{user_id}</code>
+<b>API Key:</b> <code>{api_key[:25]}...</code>
+
+📅 Time: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}
+"""
+            asyncio.run(send_admin_notification(admin_notif))
+            
+            return jsonify({'success': True, 'message': 'API deleted'})
+        else:
+            return jsonify({'success': False, 'message': 'Not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/revoke/<api_key>', methods=['POST'])
+def revoke_api(api_key):
+    try:
+        data = load_data()
+        
+        if api_key in data['apis']:
+            api_info = data['apis'][api_key]
+            data['apis'][api_key]['status'] = 'revoked'
+            save_data(data)
+            log_activity('Admin', f'API Revoked: {api_key[:20]}...')
+            
+            # Send admin notification
+            admin_notif = f"""
+⚠️ <b>API Revoked</b>
+
+<b>User:</b> {api_info.get('username')}
+<b>User ID:</b> <code>{api_info.get('user_id')}</code>
+<b>API Key:</b> <code>{api_key[:25]}...</code>
+
+📅 Time: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}
+"""
+            asyncio.run(send_admin_notification(admin_notif))
+            
+            return jsonify({'success': True, 'message': 'API revoked'})
+        else:
+            return jsonify({'success': False, 'message': 'Not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/broadcast', methods=['POST'])
 def broadcast_message():
-    """Send broadcast message to all users"""
+    """Send broadcast to all users"""
     try:
         payload = request.get_json()
         message = payload.get('message')
@@ -520,6 +636,18 @@ def broadcast_message():
         
         log_activity('Admin', f'Broadcast sent to {sent_count} users')
         
+        # Send admin notification
+        admin_notif = f"""
+📢 <b>Broadcast Completed</b>
+
+✅ Sent: {sent_count}
+❌ Failed: {failed_count}
+📊 Total: {len(users)}
+
+📅 Time: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}
+"""
+        asyncio.run(send_admin_notification(admin_notif))
+        
         return jsonify({
             'success': True,
             'sent': sent_count,
@@ -528,64 +656,6 @@ def broadcast_message():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-@app.route('/api/channel_post', methods=['POST'])
-def post_to_channel():
-    """Post message to channel"""
-    try:
-        payload = request.get_json()
-        message = payload.get('message')
-        
-        if not message:
-            return jsonify({'error': 'Message required'}), 400
-        
-        success = asyncio.run(send_channel_notification(message))
-        
-        if success:
-            log_activity('Admin', 'Channel post sent')
-            return jsonify({'success': True, 'message': 'Posted to channel'})
-        else:
-            return jsonify({'error': 'Failed to post'}), 500
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/delete/<api_key>', methods=['DELETE'])
-def delete_api(api_key):
-    try:
-        data = load_data()
-        
-        if api_key in data['apis']:
-            api_info = data['apis'][api_key]
-            user_id = api_info.get('user_id')
-            
-            del data['apis'][api_key]
-            if user_id and user_id in data['users']:
-                del data['users'][user_id]
-            
-            save_data(data)
-            log_activity('Admin', f'API Deleted: {api_key[:20]}...')
-            
-            return jsonify({'success': True, 'message': 'API deleted'})
-        else:
-            return jsonify({'success': False, 'message': 'Not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-@app.route('/api/revoke/<api_key>', methods=['POST'])
-def revoke_api(api_key):
-    try:
-        data = load_data()
-        
-        if api_key in data['apis']:
-            data['apis'][api_key]['status'] = 'revoked'
-            save_data(data)
-            log_activity('Admin', f'API Revoked: {api_key[:20]}...')
-            
-            return jsonify({'success': True, 'message': 'API revoked'})
-        else:
-            return jsonify({'success': False, 'message': 'Not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -630,6 +700,18 @@ def setup_webhook():
         
         logger.info(f"Webhook set: {full_url}")
         log_activity('System', 'Webhook Configured')
+        
+        # Send admin notification
+        admin_notif = f"""
+✅ <b>Webhook Configured</b>
+
+<b>URL:</b> {full_url}
+
+📅 Time: {datetime.now().strftime('%d %b %Y, %H:%M:%S')}
+
+🤖 Bot is now active!
+"""
+        asyncio.run(send_admin_notification(admin_notif))
         
         return jsonify({
             'success': True,

@@ -170,7 +170,7 @@ def setup_bot():
             
             # Add public channel button if configured
             if data['settings'].get('public_channel_username'):
-                keyboard.insert(4, [InlineKeyboardButton("📢 Channel", url=f"https://t.me/{data['settings']['public_channel_username']}")])]
+                keyboard.insert(4, [InlineKeyboardButton("📢 Channel", url=f"https://t.me/{data['settings']['public_channel_username']}")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
